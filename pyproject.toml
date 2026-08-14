@@ -1,0 +1,13 @@
+[project]
+name = "sfm-press"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "kloppy>=3.19.0",
+    "matplotlib>=3.11.1",
+    "mplsoccer>=1.8.0",
+    "torch>=2.13.0",
+    "torchdiffeq>=0.2.5",
+]

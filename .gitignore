@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# uv / venv
+.venv/
+
+# OS
+.DS_Store
+
+# Data caches (研究計画6.2, 6.4節: データ・チェックポイントはGoogle Drive経由で永続化、gitには含めない)
+*.npz
+*.parquet
+data/
+checkpoints/
+
+# Experiment logs
+wandb/
+*.log
+
+# Editors
+.vscode/
+.idea/
