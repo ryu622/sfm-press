@@ -9,6 +9,7 @@ kloppy経由でトラッキングデータをロードし、
 train/valid/test分割はフェーズ1の対象外とし、複数試合を扱う段階で別途実装する。
 """
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -133,4 +134,44 @@ def build_snapshot(match_id: str, cache_dir: Path = DEFAULT_CACHE_DIR, force: bo
 
     cache_dir.mkdir(parents=True, exist_ok=True)
     result.to_parquet(cache_path, index=False)
+    return result
+
+
+def determine_attacking_goal_x(
+    match_id: str, cache_dir: Path = DEFAULT_CACHE_DIR
+) -> dict[tuple[str, int], float]:
+    """{(team_id, period_id): 攻撃方向のゴールのx座標} を返す。
+
+    GKは自陣ゴール付近に留まる傾向を利用し、GKの平均x座標から
+    そのチームの攻撃方向(=逆側のゴール)を判定する。選手自身の軌道は使わない、
+    外部情報ベースの駆動力設計(3.2節のe_i(t))のための入力。
+    """
+    cache_dir = Path(cache_dir)
+    cache_path = cache_dir / f"{match_id}_attack_goal.json"
+
+    if cache_path.exists():
+        with open(cache_path) as f:
+            raw = json.load(f)
+        return {(k.split("|")[0], int(k.split("|")[1])): v for k, v in raw.items()}
+
+    tracking = sportec.load_open_tracking_data(match_id=match_id)
+    df = tracking.to_df()
+    gk_ids = _goalkeeper_ids(tracking.metadata.teams)
+    team_of = _team_of_player(tracking.metadata.teams)
+
+    result: dict[tuple[str, int], float] = {}
+    for period_id in sorted(df["period_id"].unique()):
+        sub = df[df["period_id"] == period_id]
+        for gk in gk_ids:
+            col = f"{gk}_x"
+            if col not in sub.columns:
+                continue
+            gk_avg_x = sub[col].mean() * PITCH_LENGTH
+            team_id = team_of[gk]
+            attacking_goal_x = PITCH_LENGTH if gk_avg_x < PITCH_LENGTH / 2 else 0.0
+            result[(team_id, int(period_id))] = attacking_goal_x
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    with open(cache_path, "w") as f:
+        json.dump({f"{k[0]}|{k[1]}": v for k, v in result.items()}, f, indent=2)
     return result
