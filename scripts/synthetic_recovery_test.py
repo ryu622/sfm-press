@@ -113,17 +113,24 @@ def simulate(params: dict, y0: torch.Tensor) -> torch.Tensor:
     return traj  # (N_STEPS, E, 1+Ndef, 4)
 
 
-def main():
+def run_experiment(noise_std: float = 0.0, seed: int = 0, n_steps: int = 300, verbose: bool = True) -> dict:
+    """noise_std: 観測位置に加えるi.i.d.ガウスノイズの標準偏差[m](各フレーム独立)。"""
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
     y0 = make_initial_states(N_EPISODES, N_DEF)
 
-    print("=== ground truth simulation ===")
+    if verbose:
+        print("=== ground truth simulation ===")
     with torch.no_grad():
         traj_true = simulate(TRUE, y0)
-    pos_obs = traj_true[..., :2].detach()
+    pos_clean = traj_true[..., :2].detach()
+    pos_obs = pos_clean + torch.randn_like(pos_clean) * noise_std
 
-    dists = (pos_obs[:, :, 0:1, :] - pos_obs[:, :, 1:, :]).norm(dim=-1)
-    print(f"synthetic distance range: min={dists.min():.2f}m max={dists.max():.2f}m "
-          f"median={dists.median():.2f}m")
+    dists = (pos_clean[:, :, 0:1, :] - pos_clean[:, :, 1:, :]).norm(dim=-1)
+    if verbose:
+        print(f"synthetic distance range: min={dists.min():.2f}m max={dists.max():.2f}m "
+              f"median={dists.median():.2f}m  (noise_std={noise_std}m)")
 
     # --- 推定対象パラメータ(意図的に真値からずらして初期化) ---
     raw = {
@@ -147,8 +154,8 @@ def main():
 
     optimizer = torch.optim.Adam(raw.values(), lr=0.08)
 
-    print("\n=== optimization ===")
-    n_steps = 300
+    if verbose:
+        print("\n=== optimization ===")
     history = {"step": [], "loss": [], **{k: [] for k in TRUE}}
     t0 = time.time()
     for step in range(n_steps):
@@ -165,16 +172,18 @@ def main():
         for k in TRUE:
             history[k].append(p[k])
 
-        if step % 20 == 0 or step == n_steps - 1:
+        if verbose and (step % 20 == 0 or step == n_steps - 1):
             print(
                 f"step {step:4d}  loss={loss.item():.5f}  "
                 f"A1={p['A1']:+.3f} B1={p['B1']:.3f} "
                 f"A2={p['A2']:+.3f} B2={p['B2']:.3f} "
                 f"tau_att={p['tau_att']:.3f} tau_def={p['tau_def']:.3f}"
             )
-    print(f"elapsed: {time.time() - t0:.1f}s")
+    elapsed = time.time() - t0
+    if verbose:
+        print(f"elapsed: {elapsed:.1f}s")
+        print("\n=== final comparison (true vs recovered) ===")
 
-    print("\n=== final comparison (true vs recovered) ===")
     final = {k: v.item() for k, v in get_params().items()}
     summary = {}
     for k in TRUE:
@@ -183,10 +192,13 @@ def main():
         rel_err = abs(est_v - true_v) / (abs(true_v) + 1e-8) * 100
         sign_ok = np.sign(true_v) == np.sign(est_v) or true_v == 0
         summary[k] = {"true": true_v, "recovered": est_v, "rel_err_pct": rel_err, "sign_ok": bool(sign_ok)}
-        print(f"  {k:10s}  true={true_v:+.3f}  recovered={est_v:+.3f}  rel_err={rel_err:5.1f}%  "
-              f"{'OK' if sign_ok else 'SIGN FLIPPED'}")
+        if verbose:
+            print(f"  {k:10s}  true={true_v:+.3f}  recovered={est_v:+.3f}  rel_err={rel_err:5.1f}%  "
+                  f"{'OK' if sign_ok else 'SIGN FLIPPED'}")
 
-    out = {
+    return {
+        "noise_std": noise_std,
+        "seed": seed,
         "n_episodes": N_EPISODES,
         "n_def": N_DEF,
         "true_params": TRUE,
@@ -197,8 +209,12 @@ def main():
         },
         "history": history,
         "summary": summary,
-        "elapsed_sec": time.time() - t0,
+        "elapsed_sec": elapsed,
     }
+
+
+def main():
+    out = run_experiment(noise_std=0.0, seed=0)
     with open("scripts/synthetic_recovery_result.json", "w") as f:
         json.dump(out, f, indent=2)
     print("\nsaved: scripts/synthetic_recovery_result.json")
