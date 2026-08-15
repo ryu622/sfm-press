@@ -38,7 +38,7 @@ def causal_ema_velocity(vx: np.ndarray, vy: np.ndarray, dt: float, halflife_sec:
     return ema_x, ema_y
 
 
-def build_batch(df, windows: list[dict]):
+def build_batch(df, windows: list[dict], halflife_sec: float):
     n_ep = len(windows)
     pos_obs = np.zeros((FIXED_LEN, n_ep, 1 + N_DEF, 2))
     vel0 = np.zeros((n_ep, 1 + N_DEF, 2))
@@ -53,7 +53,7 @@ def build_batch(df, windows: list[dict]):
             vx, vy = g["vx"].to_numpy()[:FIXED_LEN], g["vy"].to_numpy()[:FIXED_LEN]
             pos_obs[:, e, i, 0], pos_obs[:, e, i, 1] = x, y
             vel0[e, i] = vx[0], vy[0]
-            ema_vx, ema_vy = causal_ema_velocity(vx, vy, DT, EMA_HALFLIFE_SEC)
+            ema_vx, ema_vy = causal_ema_velocity(vx, vy, DT, halflife_sec)
             intent[:, e, i, 0], intent[:, e, i, 1] = ema_vx, ema_vy
 
     return torch.tensor(pos_obs), torch.tensor(vel0), torch.tensor(intent)
@@ -94,12 +94,9 @@ def social_force_ode_v3(A1, B1, A2, B2, tau_att, tau_def, intent, t_eval):
     return f
 
 
-def main():
-    df = build_snapshot(MATCH_ID)
-    windows = find_pooled_windows(df, N_WINDOWS, FIXED_LEN)
-    print(f"selected {len(windows)} windows")
-
-    pos_obs_t, vel0, intent_t = build_batch(df, windows)
+def run_experiment(df, windows: list[dict], halflife_sec: float, n_opt_steps: int = 1200,
+                    verbose: bool = True) -> dict:
+    pos_obs_t, vel0, intent_t = build_batch(df, windows, halflife_sec)
     t_eval = torch.linspace(0, (FIXED_LEN - 1) * DT, FIXED_LEN)
 
     n_ep = len(windows)
@@ -120,7 +117,9 @@ def main():
         )
         baseline_traj = simulate(baseline_params)
         baseline_loss = ((baseline_traj[..., :2] - pos_obs_t) ** 2).mean().item()
-    print(f"baseline (no interaction) MSE: {baseline_loss:.4f}  RMSE: {np.sqrt(baseline_loss):.3f} m")
+    if verbose:
+        print(f"[halflife={halflife_sec}s] baseline (no interaction) MSE: {baseline_loss:.4f}  "
+              f"RMSE: {np.sqrt(baseline_loss):.3f} m")
 
     def tau_of(raw):
         return TAU_MIN + (TAU_MAX - TAU_MIN) * torch.sigmoid(raw)
@@ -142,7 +141,6 @@ def main():
         )
 
     optimizer = torch.optim.Adam(raw.values(), lr=0.05)
-    n_opt_steps = 1200
     history = {"step": [], "loss": [], "A1": [], "B1": [], "A2": [], "B2": [], "tau_att": [], "tau_def": []}
 
     for step in range(n_opt_steps):
@@ -159,8 +157,9 @@ def main():
         for k in ["A1", "B1", "A2", "B2", "tau_att", "tau_def"]:
             history[k].append(p[k])
 
-        if step % 40 == 0 or step == n_opt_steps - 1:
-            print(f"step {step:4d}  loss={loss.item():.4f}  RMSE={np.sqrt(loss.item()):.3f}m  "
+        if verbose and (step % 40 == 0 or step == n_opt_steps - 1):
+            print(f"[halflife={halflife_sec}s] step {step:4d}  loss={loss.item():.4f}  "
+                  f"RMSE={np.sqrt(loss.item()):.3f}m  "
                   f"A1={p['A1']:+.3f} B1={p['B1']:.3f} A2={p['A2']:+.3f} B2={p['B2']:.3f} "
                   f"tau_att={p['tau_att']:.3f} tau_def={p['tau_def']:.3f}")
 
@@ -168,22 +167,30 @@ def main():
     with torch.no_grad():
         final_traj = simulate(final_params)
     final_loss = ((final_traj[..., :2] - pos_obs_t) ** 2).mean().item()
-    print(f"\nfinal fitted MSE: {final_loss:.4f}  RMSE: {np.sqrt(final_loss):.3f} m")
     improvement = (1 - final_loss / baseline_loss) * 100
-    print(f"improvement over no-interaction baseline: {improvement:.1f}%")
+    if verbose:
+        print(f"[halflife={halflife_sec}s] final fitted MSE: {final_loss:.4f}  "
+              f"RMSE: {np.sqrt(final_loss):.3f} m  improvement: {improvement:.1f}%")
 
-    out = {
+    return {
         "match_id": MATCH_ID,
         "n_windows": n_ep,
         "fixed_len": FIXED_LEN,
-        "ema_halflife_sec": EMA_HALFLIFE_SEC,
-        "windows": windows,
+        "ema_halflife_sec": halflife_sec,
         "baseline_mse": baseline_loss,
         "final_mse": final_loss,
         "improvement_pct": improvement,
         "final_params": {k: v.item() for k, v in final_params.items()},
         "history": history,
     }
+
+
+def main():
+    df = build_snapshot(MATCH_ID)
+    windows = find_pooled_windows(df, N_WINDOWS, FIXED_LEN)
+    print(f"selected {len(windows)} windows")
+    out = run_experiment(df, windows, EMA_HALFLIFE_SEC)
+    out["windows"] = windows
     with open("scripts/real_data_pooled_fit_v3_result.json", "w") as f:
         json.dump(out, f)
     print("\nsaved: scripts/real_data_pooled_fit_v3_result.json")
