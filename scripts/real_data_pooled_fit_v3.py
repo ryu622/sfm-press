@@ -95,7 +95,7 @@ def social_force_ode_v3(A1, B1, A2, B2, tau_att, tau_def, intent, t_eval):
 
 
 def run_experiment(df, windows: list[dict], halflife_sec: float, n_opt_steps: int = 1200,
-                    verbose: bool = True) -> dict:
+                    verbose: bool = True, tau_min: float = TAU_MIN, tau_max: float = TAU_MAX) -> dict:
     pos_obs_t, vel0, intent_t = build_batch(df, windows, halflife_sec)
     t_eval = torch.linspace(0, (FIXED_LEN - 1) * DT, FIXED_LEN)
 
@@ -122,7 +122,7 @@ def run_experiment(df, windows: list[dict], halflife_sec: float, n_opt_steps: in
               f"RMSE: {np.sqrt(baseline_loss):.3f} m")
 
     def tau_of(raw):
-        return TAU_MIN + (TAU_MAX - TAU_MIN) * torch.sigmoid(raw)
+        return tau_min + (tau_max - tau_min) * torch.sigmoid(raw)
 
     raw = {
         "A1": torch.tensor(1.0, requires_grad=True),
@@ -177,6 +177,8 @@ def run_experiment(df, windows: list[dict], halflife_sec: float, n_opt_steps: in
         "n_windows": n_ep,
         "fixed_len": FIXED_LEN,
         "ema_halflife_sec": halflife_sec,
+        "tau_min": tau_min,
+        "tau_max": tau_max,
         "baseline_mse": baseline_loss,
         "final_mse": final_loss,
         "improvement_pct": improvement,
